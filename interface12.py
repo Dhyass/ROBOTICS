@@ -5,8 +5,9 @@ Created on Fri Dec 29 19:54:57 2023
 @author: magnn
 """
 
-
+import paramiko
 import time
+
 
 import tkinter as tk
 from tkinter import ttk
@@ -261,7 +262,6 @@ class RobotController:
         style.configure("My.TLabelframe", background="white")
         self.pi_frame = ttk.LabelFrame(self.rt_frame, text="RASPBERRY PI", labelanchor="n", padding=(10, 10), style="My.TLabelframe")
         self.pi_frame.grid(row=0, column=0, padx=10, pady=10)
-        # defaut self.root, row = 3, col=0
         self.create_raspberry_pi_widgets()
 
         self.pi_serial = None
@@ -305,6 +305,8 @@ class RobotController:
         self.pi_serial_port_label.grid(row=0, column=0, padx=10, pady=5)
         self.pi_serial_port_entry.grid(row=0, column=1, padx=10, pady=5)
         self.pi_connect_button.grid(row=1, column=0, columnspan=2, pady=10)
+    
+    
 
     def create_objects_pose_widgets(self):
          bold_font = ('Helvetica', 11, 'bold')

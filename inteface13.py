@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Dec 28 22:50:30 2023
+Created on Sun Dec 31 07:43:19 2023
 
 @author: magnn
 """
 
 
+import paramiko
 import time
+
 
 import tkinter as tk
 from tkinter import ttk
 from time import strftime
-import serial
+#import serial
 import tkinter.messagebox as messagebox
 
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+#from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import math
 
@@ -31,7 +33,6 @@ cursor="hand2" # type de curseur
 justify="center" # 
 
 
-
 class RobotController:
     MIN_ANGLE = -180
     MAX_ANGLE = 180
@@ -41,13 +42,27 @@ class RobotController:
         self.root.title("Robot Controller")
         #self.root.configure(background="lime")
         
-    
+        # Create a Canvas widget
+        self.canvas = tk.Canvas(self.root, width=500, height=500, bg="white")
+
+       # Use grid to place the canvas, and configure the grid behavior
+        self.canvas.grid(row=0, column=0, sticky="nsew")  # sticky="nsew" makes the canvas expand with the window
+
+       # Configure row and column weights to make the canvas expandable
+        self.root.rowconfigure(0, weight=2)
+        self.root.columnconfigure(0, weight=2)
+
     
         #self.fig, self.ax0 = plt.subplots()
         self.fig = None
         self.ax0 = None
         
         self.error_history = []
+        
+        self.pi_hostname = tk.StringVar()
+        self.pi_hostname.set("NONE")
+        
+        self.fgpi=False
         
         # Variable de drapeau pour indiquer si le processus doit être arrêté
         self.stop_process_flag = False
@@ -74,31 +89,32 @@ class RobotController:
          # Section Menu
         bold_font = ('Helvetica', 11, 'bold')
 
-        self.menu_frame = ttk.LabelFrame(self.root, text="ROBOT CONTROL", labelanchor="n", padding=(5, 5), style="My.TLabelframe")
+        self.menu_frame = ttk.LabelFrame(self.canvas, text="ROBOT CONTROL", labelanchor="n", padding=(5, 5), style="My.TLabelframe")
         self.menu_frame.grid(row=0, column=0, columnspan=4, padx=10, pady=10, ipady=1)
        
         self.btn_start = tk.Button(self.menu_frame, text="✔ START",  command=self.start_robot, background="lime", 
-                                   font=bold_font, height=2, width=20, cursor=cursor )
+                                   font=bold_font, height=1, width=20, cursor=cursor )
         self.btn_stop = tk.Button(self.menu_frame, text="STOP", command=self.stop_robot, 
-                                  font=bold_font, height=2, width=20, cursor=cursor)
+                                  font=bold_font, height=1, width=20, cursor=cursor)
         self.btn_quit = tk.Button(self.menu_frame, text="EXIT", command=self.quit, 
-                                  font=bold_font, height=2, width=20, cursor=cursor)
+                                  font=bold_font, height=1, width=20, cursor=cursor)
         self.btn_home = tk.Button(self.menu_frame, text="Home",  command=self.start_update_pid_home,  
-                                  font=bold_font, height=2, width=20, cursor=cursor)
+                                  font=bold_font, height=1, width=20, cursor=cursor)
         
         # Créer un bouton pour déclencher la mise à jour PID
         self.btn_pid = tk.Button(self.menu_frame, text="PID", command=self.start_update_pid, 
-                                 font=bold_font, height=2, width=20, cursor=cursor)
+                                 font=bold_font, height=1, width=20, cursor=cursor)
         
         
        # Configuration des boutons avec des marges
         for i, btn in enumerate([self.btn_start, self.btn_stop, self.btn_quit, self.btn_home, self.btn_pid ]):
-           btn.grid(row=0, column=i, padx=10, pady=10)
+           btn.grid(row=0, column=i, padx=5, pady=5)
           
         #section commandes 
-        self.var_frame = ttk.LabelFrame(self.root, text="COMMANDE", labelanchor="n", padding=(5, 5), style="My.TLabelframe")
-        self.var_frame.grid(row=1, column=0, padx=10, pady=10)
-          
+        self.var_frame = ttk.LabelFrame(self.canvas, text="COMMANDE", labelanchor="n", padding=(5, 5), style="My.TLabelframe")
+        self.var_frame.grid(row=1, column=0, padx=5, pady=5)
+     
+
         # parameters
         self.param_frame = ttk.LabelFrame(self.var_frame, text="PARAMETERS", padding=(10,10))
         self.param_frame.grid( row=0, column=1, padx=10, pady=10)
@@ -154,8 +170,8 @@ class RobotController:
         self.create_approach_vector_widgets()
         
         # subsections angles
-        self.sub_frame = ttk.LabelFrame(self.var_frame, text=" ", labelanchor="n", padding=(10, 10))
-        self.sub_frame.grid(row=0, column=0, padx=10, pady=10)
+        self.sub_frame = ttk.LabelFrame(self.var_frame, text=" ", labelanchor="n", padding=(5, 5))
+        self.sub_frame.grid(row=0, column=0, padx=5, pady=5)
 
         # Section Angles
         self.angles_frame = ttk.LabelFrame(self.sub_frame, text="JIONT ANGLES (Deg)", labelanchor="n", padding=(10, 10))
@@ -251,16 +267,20 @@ class RobotController:
         style.configure("My.TLabelframe", background="white")
         self.pi_frame = ttk.LabelFrame(self.rt_frame, text="RASPBERRY PI", labelanchor="n", padding=(10, 10), style="My.TLabelframe")
         self.pi_frame.grid(row=0, column=0, padx=10, pady=10)
-        # defaut self.root, row = 3, col=0
         self.create_raspberry_pi_widgets()
 
-        self.pi_serial = None
+        self.pi_Serial = None
         
         # Section objects position
         style.configure("My.TLabelframe", background="white")
         self.object_frame = ttk.LabelFrame(self.rt_frame, text="OBJECT TRAJECTORY", labelanchor="n", padding=(10, 10), style="My.TLabelframe")
         self.object_frame.grid(row=0, column=1, padx=10, pady=10)
         self.create_objects_pose_widgets()
+        
+        # section author
+        self.autor_label = ttk.Label(self.sub_frame, text="COPY RIGHT 2023",  background="white", 
+                                  font=bold_font, width=30, justify="center")
+        self.autor_label.grid(row=2, column=0, padx=10, pady=10)
 
         # Display real-time clock
         self.clock_label = ttk.Label(self.menu_frame, text="",  background="white", 
@@ -278,18 +298,29 @@ class RobotController:
 
     def create_raspberry_pi_widgets(self):
         bold_font = ('Helvetica', 11, 'bold')
-        background="lime"
-        height=1
-        width=10
+        background = "lime"
+        height = 1
+        width = 10
+        justify = 'center'  # Assuming justify is defined somewhere in your code
+        cursor = 'arrow'    # Assuming cursor is defined somewhere in your code
+    
         self.pi_serial_port_label = tk.Label(self.pi_frame, text="Port:", font=bold_font, background="white")
-        self.pi_serial_port_entry = tk.Entry(self.pi_frame, justify=justify, font=bold_font, width=width,
-                                             textvariable=tk.StringVar(value="None"), fg='gray')
-        self.pi_connect_button = tk.Button(self.pi_frame, text="Connect ", command=self.connect_to_pi,
-                                           background=background, height=height, width=10, font=5, cursor=cursor)
-
+        
+        if self.fgpi==True:
+            self.pi_serial_port_entry = tk.Entry(self.pi_frame, justify=justify, font=bold_font, width=width,
+                                                 textvariable=self.pi_hostname, fg='black')
+        else:
+            self.pi_serial_port_entry = tk.Entry(self.pi_frame, justify=justify, font=bold_font, width=width,
+                                                 textvariable=self.pi_hostname, fg="gray")
+            
+        self.pi_connect_button = tk.Button(self.pi_frame, text="Connect", command=self.connect_to_pi,
+                                           background=background, height=height, width=10, font= bold_font, cursor=cursor)
+    
         self.pi_serial_port_label.grid(row=0, column=0, padx=10, pady=5)
         self.pi_serial_port_entry.grid(row=0, column=1, padx=10, pady=5)
         self.pi_connect_button.grid(row=1, column=0, columnspan=2, pady=10)
+        
+        
 
     def create_objects_pose_widgets(self):
          bold_font = ('Helvetica', 11, 'bold')
@@ -781,32 +812,44 @@ class RobotController:
             self.entry_tranverse_motor_velocity.delete(0, tk.END)
             self.entry_tranverse_motor_velocity.insert(0, f"{float(value):.2f}")
 
-
+    
     def connect_to_pi(self):
-        pi_serial_port = self.pi_serial_port_entry.get()
-
-        try:
-            self.pi_serial = serial.Serial(pi_serial_port, baudrate=9600, timeout=1)
-            print(f"Connecté à la Raspberry Pi sur le port série {pi_serial_port}")
-        except Exception as e:
-            print(f"Erreur lors de la connexion à la Raspberry Pi : {e}")
-
+         pi_hostname = "raspberrypi"  # Raspberry Pi's hostname or IP address
+         pi_username = "magnn"        # Raspberry Pi's username
+         pi_password = "magn2023"     # Raspberry Pi's password (consider using key-based authentication for security)
+    
+         try:
+             ssh = paramiko.SSHClient()
+             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+             ssh.connect(pi_hostname, username=pi_username, password=pi_password)
+             print(f"Connected to Raspberry Pi: {pi_hostname}")
+             
+             # Update the StringVar associated with the Entry
+             self.pi_hostname=pi_hostname
+             self.pi_serial_port_entry.delete(0, tk.END)
+             self.pi_serial_port_entry.insert(0, self.pi_hostname)
+             self.fgpi = True
+    
+         except Exception as e:
+             print(f"Error connecting to Raspberry Pi: {e}")
+        
     def send_data_to_pi(self, data):
-        if self.pi_serial:
+        if self.ssh:
             try:
-                self.pi_serial.write(data.encode())
-                print(f"Données envoyées à la Raspberry Pi : {data}")
+                stdin, stdout, stderr = self.ssh.exec_command(f"echo '{data}'")
+                print(f"Data sent to Raspberry Pi: {data}")
             except Exception as e:
-                print(f"Erreur lors de l'envoi de données à la Raspberry Pi : {e}")
-
+                print(f"Error sending data to Raspberry Pi: {e}")
+    
     def receive_data_from_pi(self):
-        if self.pi_serial:
+        if self.ssh:
             try:
-                received_data = self.pi_serial.readline().decode().strip()
-                print(f"Données reçues de la Raspberry Pi : {received_data}")
+                stdin, stdout, stderr = self.ssh.exec_command("your_command_here")
+                received_data = stdout.read().decode().strip()
+                print(f"Data received from Raspberry Pi: {received_data}")
                 return received_data
             except Exception as e:
-                print(f"Erreur lors de la réception de données de la Raspberry Pi : {e}")
+                print(f"Error receiving data from Raspberry Pi: {e}")
         return None
 
     def start_robot(self):

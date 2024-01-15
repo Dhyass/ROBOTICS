@@ -1,25 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Dec 28 22:50:30 2023
+Created on Sun Jan 14 01:33:16 2024
 
 @author: magnn
 """
 
+import threading
 
+import paramiko
 import time
+import subprocess
+from picamera import PiCamera
 
 import tkinter as tk
 from tkinter import ttk
 from time import strftime
-import serial
+#import serial
 import tkinter.messagebox as messagebox
 
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+#from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import math
+import RPi.GPIO as GPIO
 
+# dennes de nema 23
 
+max_speed=666.67 # Vitesse de rotation (RPM)=  Nombre de pas par tour(360/1.8=200)×Nombre de phases(2)×Frequence d'impulsion(1000Hz)/60
+steps_per_degree=0.56 # steps_per_degree= 1/angle_per_step(1.8)
+
+# Longeur des articulations du bras robot
 Longueur_d1 = 8 # distance entre la premiere et la deuxieme articulations
 Longeur_d5 = 60 # 
 
@@ -31,17 +41,28 @@ cursor="hand2" # type de curseur
 justify="center" # 
 
 
-
 class RobotController:
     MIN_ANGLE = -180
     MAX_ANGLE = 180
+    DEFAULT_HOSTNAME = "NONE"
+    DEFAULT_BACKGROUND = "lime"
+    DEFAULT_FONT = ('Helvetica', 11, 'bold')
 
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Robot Controller")
         #self.root.configure(background="lime")
+        #pins configuration
+        self.pins_config()
         
-    
+        
+        
+        self.streaming = False  # Flag to track if the camera is currently streaming
+
+       # Configure row and column weights to make the canvas expandable
+        self.root.rowconfigure(0, weight=2)
+        self.root.columnconfigure(0, weight=2)
+
     
         #self.fig, self.ax0 = plt.subplots()
         self.fig = None
@@ -49,8 +70,15 @@ class RobotController:
         
         self.error_history = []
         
+        self.pi_hostname = tk.StringVar()
+        self.pi_hostname.set(self.DEFAULT_HOSTNAME)
+        self.fgpi = False
+        self.ssh = None # an attribute to store the SSH connection
+      
         # Variable de drapeau pour indiquer si le processus doit être arrêté
         self.stop_process_flag = False
+        self.camera_thread = None  # Thread object to handle camera streaming
+
         
          # Création d'un style ttk
         style = ttk.Style()
@@ -60,8 +88,10 @@ class RobotController:
         self.kp = 0.1  # Gain proportionnel
         self.ki = 0.01  # Gain intégral
         self.kd = 0.01  # Gain dérivé
+        
+     
 
-        # Initialiser les erreurs PID
+        # Initialiser les erreurs PIDi
         self.prev_error = [0, 0, 0, 0, 0]
         self.integral = [0, 0, 0, 0, 0]
 
@@ -70,6 +100,7 @@ class RobotController:
 
         # Initialiser les positions actuelles
         self.current_positions = [0, 0, 0, 0, 0]
+        
 
          # Section Menu
         bold_font = ('Helvetica', 11, 'bold')
@@ -78,27 +109,25 @@ class RobotController:
         self.menu_frame.grid(row=0, column=0, columnspan=4, padx=10, pady=10, ipady=1)
        
         self.btn_start = tk.Button(self.menu_frame, text="✔ START",  command=self.start_robot, background="lime", 
-                                   font=bold_font, height=2, width=20, cursor=cursor )
+                                   font=bold_font, height=1, width=20, cursor=cursor )
         self.btn_stop = tk.Button(self.menu_frame, text="STOP", command=self.stop_robot, 
-                                  font=bold_font, height=2, width=20, cursor=cursor)
+                                  font=bold_font, height=1, width=20, cursor=cursor)
         self.btn_quit = tk.Button(self.menu_frame, text="EXIT", command=self.quit, 
-                                  font=bold_font, height=2, width=20, cursor=cursor)
+                                  font=bold_font, height=1, width=20, cursor=cursor)
         self.btn_home = tk.Button(self.menu_frame, text="Home",  command=self.start_update_pid_home,  
-                                  font=bold_font, height=2, width=20, cursor=cursor)
+                                  font=bold_font, height=1, width=20, cursor=cursor)
         
-        # Créer un bouton pour déclencher la mise à jour PID
-        self.btn_pid = tk.Button(self.menu_frame, text="PID", command=self.start_update_pid, 
-                                 font=bold_font, height=2, width=20, cursor=cursor)
         
         
        # Configuration des boutons avec des marges
-        for i, btn in enumerate([self.btn_start, self.btn_stop, self.btn_quit, self.btn_home, self.btn_pid ]):
-           btn.grid(row=0, column=i, padx=10, pady=10)
+        for i, btn in enumerate([self.btn_start, self.btn_stop, self.btn_quit, self.btn_home]):
+           btn.grid(row=0, column=i, padx=5, pady=5)
           
         #section commandes 
         self.var_frame = ttk.LabelFrame(self.root, text="COMMANDE", labelanchor="n", padding=(5, 5), style="My.TLabelframe")
-        self.var_frame.grid(row=1, column=0, padx=10, pady=10)
-          
+        self.var_frame.grid(row=1, column=0, padx=5, pady=5)
+     
+
         # parameters
         self.param_frame = ttk.LabelFrame(self.var_frame, text="PARAMETERS", padding=(10,10))
         self.param_frame.grid( row=0, column=1, padx=10, pady=10)
@@ -154,8 +183,8 @@ class RobotController:
         self.create_approach_vector_widgets()
         
         # subsections angles
-        self.sub_frame = ttk.LabelFrame(self.var_frame, text=" ", labelanchor="n", padding=(10, 10))
-        self.sub_frame.grid(row=0, column=0, padx=10, pady=10)
+        self.sub_frame = ttk.LabelFrame(self.var_frame, text=" ", labelanchor="n", padding=(5, 5))
+        self.sub_frame.grid(row=0, column=0, padx=5, pady=5)
 
         # Section Angles
         self.angles_frame = ttk.LabelFrame(self.sub_frame, text="JIONT ANGLES (Deg)", labelanchor="n", padding=(10, 10))
@@ -175,6 +204,19 @@ class RobotController:
 
         self.angle_j5 = tk.DoubleVar()
         self.angle_j5.set(0.0)  # Initialize to the initial value of J2
+        
+                
+            # Define your angle variables, corresponding motor indices, and speeds in lists
+        self.angle_vars = [
+            self.angle_j1,  # Initialize to the initial value of J1
+            self.angle_j2,  # Initialize to the initial value of J2
+            self.angle_j3,  # Initialize to the initial value of J3
+            self.angle_j4,  # Initialize to the initial value of J4
+            self.angle_j5,  # Initialize to the initial value of J5
+        ]
+    
+        self.motor_indices = list(range(5))
+        self.speeds = [100, 90, 70, 80, 20]
 
 
         self.create_angle_widgets()
@@ -251,16 +293,20 @@ class RobotController:
         style.configure("My.TLabelframe", background="white")
         self.pi_frame = ttk.LabelFrame(self.rt_frame, text="RASPBERRY PI", labelanchor="n", padding=(10, 10), style="My.TLabelframe")
         self.pi_frame.grid(row=0, column=0, padx=10, pady=10)
-        # defaut self.root, row = 3, col=0
         self.create_raspberry_pi_widgets()
 
-        self.pi_serial = None
+        self.pi_Serial = None
         
-        # Section objects position
+        # Section cAMERA 
         style.configure("My.TLabelframe", background="white")
-        self.object_frame = ttk.LabelFrame(self.rt_frame, text="OBJECT TRAJECTORY", labelanchor="n", padding=(10, 10), style="My.TLabelframe")
+        self.object_frame = ttk.LabelFrame(self.rt_frame, text="CAMERA", labelanchor="n", padding=(10, 10), style="My.TLabelframe")
         self.object_frame.grid(row=0, column=1, padx=10, pady=10)
         self.create_objects_pose_widgets()
+        
+        # Section: Author
+        self.author_label = ttk.Label( self.sub_frame,text="COPYRIGHT 2023", font=bold_font, width=30, justify="center"
+        )
+        self.author_label.grid(row=2, column=0, padx=10, pady=10)
 
         # Display real-time clock
         self.clock_label = ttk.Label(self.menu_frame, text="",  background="white", 
@@ -269,43 +315,64 @@ class RobotController:
 
         # Update clock every second
         self.update_clock()
-    
-
+        self.create_pid_btn() # for pid button
+        self.bind_sliders_to_motors() # methods for slider to motors
+        
     def update_clock(self):
         time_string = strftime("%H:%M:%S %p")
         self.clock_label.config(text=time_string)
         self.root.after(1000, self.update_clock)
 
     def create_raspberry_pi_widgets(self):
-        bold_font = ('Helvetica', 11, 'bold')
-        background="lime"
-        height=1
-        width=10
-        self.pi_serial_port_label = tk.Label(self.pi_frame, text="Port:", font=bold_font, background="white")
-        self.pi_serial_port_entry = tk.Entry(self.pi_frame, justify=justify, font=bold_font, width=width,
-                                             textvariable=tk.StringVar(value="None"), fg='gray')
-        self.pi_connect_button = tk.Button(self.pi_frame, text="Connect ", command=self.connect_to_pi,
-                                           background=background, height=height, width=10, font=5, cursor=cursor)
+        self.pi_serial_port_label = tk.Label(self.pi_frame, text="Port:", font=self.DEFAULT_FONT, background="white")
+
+        entry_fg = "gray" if not self.fgpi else None
+        self.pi_serial_port_entry = tk.Entry(self.pi_frame, justify='center', font=self.DEFAULT_FONT, width=10,
+                                             textvariable=self.pi_hostname, fg=entry_fg)
+
+        self.pi_connect_button = self.create_button("Connect", self.toggle_connection)
+        self.pi_disconnect_button = self.create_button("Disconnect", self.toggle_connection)
+        self.pi_disconnect_button.grid_remove()
 
         self.pi_serial_port_label.grid(row=0, column=0, padx=10, pady=5)
         self.pi_serial_port_entry.grid(row=0, column=1, padx=10, pady=5)
-        self.pi_connect_button.grid(row=1, column=0, columnspan=2, pady=10)
+        self.pi_connect_button.grid(row=1, columnspan=2, column=0, pady=10)
+        
+    
+    def create_button(self, text, command):
+        return tk.Button(self.pi_frame, text=text, command=command, background=self.DEFAULT_BACKGROUND,
+                         height=1, width=10, font=self.DEFAULT_FONT, cursor=cursor)
+        
+    def create_pid_btn(self):
+        # Créer un bouton pour déclencher la mise à jour PID
+        bold_font = ('Helvetica', 11, 'bold')
+        self.btn_pid = tk.Button(self.menu_frame, text="PID", command=self.start_update_pid, 
+                                 font=bold_font, height=1, width=20, cursor=cursor)
+        self.btn_pid.grid(row=0, column=4, padx=5, pady=5)
+        
 
     def create_objects_pose_widgets(self):
-         bold_font = ('Helvetica', 11, 'bold')
-         background="lime"
-         height=1
-         width=10
-         self.object_label = tk.Label(self.object_frame, text="3D OBJECT", font=bold_font, background="white")
-         self.object_entry = tk.Entry(self.object_frame, justify=justify, font=bold_font, width=width,
-                                              textvariable=tk.StringVar(value="None"), fg='gray')
-         self.object_button = tk.Button(self.object_frame, text="Trajectory", command=self.open_second_window,
-                                            background=background, height=height, width=10, font=5, cursor=cursor)
+          bold_font = ('Helvetica', 11, 'bold')
+          background = "lime"
+          height = 1
+          width = 10
+
+          self.object_label = tk.Label(self.object_frame, text="3D OBJECT", font=bold_font, background="white")
+          self.object_entry = tk.Entry(self.object_frame, justify=tk.CENTER, font=bold_font, width=width,
+                                       textvariable=tk.StringVar(value="None"), fg='gray')
+          self.object_button = tk.Button(self.object_frame, text="Start CAMERA", command=self.toggle_camera_stream,
+                                         background=background, height=height, width=10, font=5)
+
+          self.object_label.grid(row=0, column=0, padx=10, pady=5)
+          self.object_entry.grid(row=0, column=1, padx=10, pady=5)
+          self.object_button.grid(row=1, column=0, columnspan=2, pady=10)
+          
+          camera_name = self.detect_camera_name()
+
+        # Check if the camera ID is available
+          if camera_name is not None:
+             self.set_camera_name(camera_name)
          
-        
-         self.object_label.grid(row=0, column=0, padx=10, pady=5)
-         self.object_entry.grid(row=0, column=1, padx=10, pady=5)
-         self.object_button.grid(row=1, column=0, columnspan=2, pady=10)
          
     def create_angle_widgets(self):
         # Section Menu
@@ -604,6 +671,7 @@ class RobotController:
       
               # Masquer le curseur en définissant la position à la fin du texte
               entry.icursor(tk.END)
+              
           except ValueError:
              
               # Remettre la valeur précédente de la variable associée au slider
@@ -781,42 +849,67 @@ class RobotController:
             self.entry_tranverse_motor_velocity.delete(0, tk.END)
             self.entry_tranverse_motor_velocity.insert(0, f"{float(value):.2f}")
 
+    
+    def toggle_connection(self):
+        if self.fgpi:
+            self.disconnect_from_pi()
+        else:
+            self.connect_to_pi()
 
-    def connect_to_pi(self):
-        pi_serial_port = self.pi_serial_port_entry.get()
-
+    def connect_to_pi(self, hostname="raspberrypi", username="magnn", password="magn2023"):
         try:
-            self.pi_serial = serial.Serial(pi_serial_port, baudrate=9600, timeout=1)
-            print(f"Connecté à la Raspberry Pi sur le port série {pi_serial_port}")
+            with paramiko.SSHClient() as ssh:
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(hostname, username=username, password=password)
+                self.ssh = ssh
+                self.pi_hostname.set(hostname)
+                self.fgpi = True
+                self.pi_connect_button.grid_remove()
+                self.pi_disconnect_button.grid(row=1, column=0, columnspan=2, pady=10)
+                messagebox.showinfo("Raspberry Status", f"Connected to Raspberry Pi: {hostname}")
         except Exception as e:
-            print(f"Erreur lors de la connexion à la Raspberry Pi : {e}")
+            messagebox.showerror("Raspberry Status", f"Error connecting to Raspberry Pi: {e}")
+
+    def disconnect_from_pi(self):
+        if self.ssh:
+            self.ssh.close()
+        self.pi_disconnect_button.grid_remove()
+        self.pi_connect_button.grid(row=1, column=0, columnspan=2, pady=10)
+        self.fgpi = False
+        messagebox.showinfo("Raspberry Status", "Disconnected from Raspberry Pi")
 
     def send_data_to_pi(self, data):
-        if self.pi_serial:
+        if self.ssh:
             try:
-                self.pi_serial.write(data.encode())
-                print(f"Données envoyées à la Raspberry Pi : {data}")
+                stdin, stdout, stderr = self.ssh.exec_command(f"echo '{data}'")
+                messagebox.showinfo("Data Sent", f"Data sent to Raspberry Pi: {data}")
             except Exception as e:
-                print(f"Erreur lors de l'envoi de données à la Raspberry Pi : {e}")
+                messagebox.showerror("Data Error", f"Error sending data to Raspberry Pi: {e}")
 
     def receive_data_from_pi(self):
-        if self.pi_serial:
+        if self.ssh:
             try:
-                received_data = self.pi_serial.readline().decode().strip()
-                print(f"Données reçues de la Raspberry Pi : {received_data}")
+                stdin, stdout, stderr = self.ssh.exec_command("your_command_here")
+                received_data = stdout.read().decode().strip()
+                messagebox.showinfo("Data received", f"Data received from Raspberry Pi: {received_data}")
                 return received_data
             except Exception as e:
-                print(f"Erreur lors de la réception de données de la Raspberry Pi : {e}")
+                messagebox.showerror("Data Error", f"Error receiving data from Raspberry Pi: {e}")
         return None
 
     def start_robot(self):
-        print("Robot démarré")
+       message= "Enjoy"
+       messagebox.showinfo("Robot Statut", f"Robot Started: {message}")
 
     def stop_robot(self):
-        print("Robot arrêté")
+        message= "Stopped"
+        
         self.stop_process_flag = True
         self.btn_pid.config(state=tk.NORMAL)
         self.btn_home.config(state=tk.NORMAL)
+        messagebox.showinfo("Robot Statut", f"Robot {message}")
+        self.streaming = False
+        self.object_button.config(text="Start CAMERA")
    
     def update_pid(self):
         self.target_positions = [self.angle_j1_cible.get(),self.angle_j2_cible.get(), self.angle_j3_cible.get(),
@@ -838,45 +931,32 @@ class RobotController:
         self.error_history.append(total_error)
         
         if not self.are_positions_close(self.current_positions, self.target_positions, tolerance=0.1):
+           self.update_motors_gpio(self.target_positions, speeds=[100, 90, 0,0,20])  # motors angles and speeds
            self.update_motors(pid_commands)
 
            # Mettre à jour l'erreur précédente
            self.prev_error = errors
 
            # Appel de la fonction pour mettre à jour la représentation graphique
-           self.update_plot()
+          # self.update_plot()
       
     def are_positions_close(self, current_positions, target_positions, tolerance):
           return all(abs(curr - target) < tolerance for curr, target in zip(current_positions, target_positions))
     
    
     def update_motors(self, commands):
-    # Mettre à jour la position actuelle du moteur (simuler le mouvement)
+        # Mettre à jour la position actuelle du moteur (simuler le mouvement)
         for i, command in enumerate(commands):
-            new_position =round( min(self.current_positions[i] + command, self.current_positions[i] + 5),2)
-            #getattr(self, f"angle_j{i + 1}", new_position)
-            if i==0:
-                self.angle_j1.set(new_position)
-                self.entry_j1.delete(0, tk.END)
-                self.entry_j1.insert(0, str(new_position))
-            if i==1:
-                self.angle_j2.set(new_position)
-                self.entry_j2.delete(0, tk.END)
-                self.entry_j2.insert(0, str(new_position))
-            if i==2:
-                self.angle_j3.set(new_position)
-                self.entry_j3.delete(0, tk.END)
-                self.entry_j3.insert(0, str(new_position))
-            if i==3:
-                self.angle_j4.set(new_position)
-                self.entry_j4.delete(0, tk.END)
-                self.entry_j4.insert(0, str(new_position))
-            if i==4:
-                self.angle_j5.set(new_position)
-                self.entry_j5.delete(0, tk.END)
-                self.entry_j5.insert(0, str(new_position))
-                
-       
+            new_position = round(min(self.current_positions[i] + command, self.current_positions[i] + 5), 2)
+            angle_var = getattr(self, f"angle_j{i + 1}")
+            entry_widget = getattr(self, f"entry_j{i + 1}")
+    
+            angle_var.set(new_position)
+            entry_widget.delete(0, tk.END)
+            entry_widget.insert(0, str(new_position))
+    
+                    
+           
             self.calculate_X()
             self.calculate_Y()
             self.calculate_Z()
@@ -892,7 +972,8 @@ class RobotController:
         
         # Vérifier si la figure et l'axe existent
         if self.fig is None or self.ax0 is None:
-           print("Erreur : la figure et l'axe doivent être créés en appelant open_second_window.")
+           message= "open_second_window"
+           messagebox.showerror("Error", f"the figure and the axis must created by calling {message}")
            return
        
         #  tracer l'historique des erreurs
@@ -907,7 +988,7 @@ class RobotController:
     
     def start_update_pid(self):
         self.stop_process_flag = False
-        self.open_second_window()
+        #self.open_second_window()
         # Désactiver le bouton pendant la mise à jour automatique
         self.btn_pid.config(state=tk.DISABLED)
         self.btn_home.config(state=tk.DISABLED)
@@ -929,9 +1010,6 @@ class RobotController:
                 
                 # Si non, planifier la prochaine mise à jour après un court délai
                 self.root.after(100, self.auto_update_pid)  # Appeler après 1000 ms (1 seconde)
-        
-            
-        
         
     def increment_j1(self):
         current_value = self.angle_j1.get()
@@ -1682,7 +1760,8 @@ class RobotController:
             self.ay.set(value_ay)
             self.set_ay()
         except ValueError:
-            print("Valeur non valide pour ay.")
+            messagebox.showerror("ay Error", f" ay invalid value: {value}")
+            
     
     def set_ay(self):
         ay = round(float(self.ay.get()),2)
@@ -1718,7 +1797,8 @@ class RobotController:
             self.az.set(value_az)
             self.set_az()
         except ValueError:
-            print("Valeur non valide pour az.")
+            messagebox.showerror("az Error", f" az invalid value: {value}")
+            
     
     def set_az(self):
         az = round(float(self.az.get()),2)
@@ -1729,10 +1809,21 @@ class RobotController:
         self.calculate_angles()
     def start_update_pid_home(self):
         self.stop_process_flag = False
-        self.open_second_window()
+        #self.open_second_window()
         # Désactiver le bouton pendant la mise à jour automatique
-        self.btn_pid.config(state=tk.DISABLED)
+        
+        #self.btn_pid.config(state=tk.DISABLED)
+        try:
+            # Disable the button to prevent multiple clicks
+            if self.btn_pid:
+                self.btn_pid.config(state=tk.DISABLED)
+            else:
+                print("Error: Button not found.")
+        except tk.TclError as e:
+            print(f"Error configuring button: {e}")
+
         self.btn_home.config(state=tk.DISABLED)
+        
         
         # Appeler la fonction update_pid de manière récursive jusqu'à ce que les valeurs soient égales aux valeurs cibles
         self.auto_update_pid_home()
@@ -1750,9 +1841,6 @@ class RobotController:
                 
                 # Si non, planifier la prochaine mise à jour après un court délai
                 self.root.after(100, self.auto_update_pid_home)  # Appeler après 1000 ms (1 seconde)
-        
-            
-       
         
     def update_pid_home(self):
         self.target_positions = [90, 90, -90,
@@ -1774,13 +1862,14 @@ class RobotController:
         self.error_history.append(total_error)
         
         if not self.are_positions_close(self.current_positions, self.target_positions, tolerance=0.1):
+           self.update_motors_gpio(self.target_positions, speeds=[100, 90, 0,0,20])  # motors angles and speeds
            self.update_motors_home(pid_commands)
 
            # Mettre à jour l'erreur précédente
            self.prev_error = errors
 
            # Appel de la fonction pour mettre à jour la représentation graphique
-           self.update_plot()
+           #self.update_plot()
             
 
     def update_motors_home(self, commands):
@@ -1788,27 +1877,14 @@ class RobotController:
         for i, command in enumerate(commands):
             new_position =round( min(self.current_positions[i] + command, self.current_positions[i] + 5),2)
             #getattr(self, f"angle_j{i + 1}", new_position)
-            if i==0:
-                self.angle_j1.set(new_position)
-                self.entry_j1.delete(0, tk.END)
-                self.entry_j1.insert(0, str(new_position))
-            if i==1:
-                self.angle_j2.set(new_position)
-                self.entry_j2.delete(0, tk.END)
-                self.entry_j2.insert(0, str(new_position))
-            if i==2:
-                self.angle_j3.set(new_position)
-                self.entry_j3.delete(0, tk.END)
-                self.entry_j3.insert(0, str(new_position))
-            if i==3:
-                self.angle_j4.set(new_position)
-                self.entry_j4.delete(0, tk.END)
-                self.entry_j4.insert(0, str(new_position))
-            if i==4:
-                self.angle_j5.set(new_position)
-                self.entry_j5.delete(0, tk.END)
-                self.entry_j5.insert(0, str(new_position))
-                
+            # Update the angle for the corresponding motor
+            angle_var = getattr(self, f"angle_j{i + 1}")
+            angle_var.set(new_position)
+
+           # Update the corresponding entry widget
+            entry_var = getattr(self, f"entry_j{i + 1}")
+            entry_var.delete(0, tk.END)
+            entry_var.insert(0, str(new_position))
           
             self.calculate_X()
             self.calculate_Y()
@@ -1830,6 +1906,87 @@ class RobotController:
     
         # attente pause
         time.sleep(0.1)
+
+    def toggle_camera_stream(self):
+        if self.streaming:
+            self.stop_camera_stream()
+        else:
+            self.start_camera_stream()
+
+    def start_camera_stream(self):
+        try:
+            camera_name = self.detect_camera_name()
+
+            if not camera_name:
+                messagebox.showerror("Error", "Unable to detect camera name.")
+                return
+
+            self.set_camera_name(camera_name)
+
+            # Start the camera streaming thread
+            self.camera_thread = threading.Thread(target=self._camera_streaming_thread)
+            self.camera_thread.start()
+
+            # Update UI
+            self.streaming = True
+            self.object_button.config(text="Stop CAMERA")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error starting camera stream: {e}")
+
+    def stop_camera_stream(self):
+        try:
+            self.streaming = False
+            # Stop the camera streaming thread
+            if self.camera_thread and self.camera_thread.is_alive():
+                self.camera_thread.join()
+
+            # Update UI
+            
+            self.object_button.config(text="Start CAMERA")
+            messagebox.showinfo("Success", "Camera stream stopped successfully")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error stopping camera stream: {e}")
+
+    def _camera_streaming_thread(self):
+        try:
+            with PiCamera() as camera:
+                # Additional camera configurations if needed
+                camera.start_preview()
+
+                # Continue streaming until self.streaming is False
+                while self.streaming:
+                    # Add any necessary code to keep the camera stream running
+                    time.sleep(1)  # Adjust sleep duration as needed
+
+        except Exception as e:
+            messagebox.showerror("Camera Error", f"Error during camera streaming: {e}")
+
+
+    def detect_camera_name(self):
+        try:
+            # Use raspistill command to get camera information
+            output = subprocess.check_output(["raspivid", "-v"])
+            output_str = output.decode("utf-8")
+
+            # Search for the camera name in the output
+            index_start = output_str.find("Camera ") + len("Camera ")
+            index_end = output_str.find(",", index_start)
+            camera_name = output_str[index_start:index_end]
+            camera_name="ov5647"
+
+            return camera_name
+        except Exception as e:
+            # Handle exceptions (e.g., if the camera is not detected)
+            messagebox.showerror("Camera Error", f"Detecting camera name: {e}")
+            return None
+
+    def set_camera_name(self, camera_name):
+        # Set the camera name to the object entry
+        self.object_entry.delete(0, tk.END)  # Clear the existing text
+        self.object_entry.insert(0, camera_name)  # Set the new camera name
+        messagebox.showinfo("Camera Name", f"Camera name set to: {camera_name}")
         
     def open_second_window(self):
         # Créer la figure et l'axe pour le graphique
@@ -1838,8 +1995,92 @@ class RobotController:
         self.ax0.set_ylabel('Total Error')
         self.ax0.set_title('PID') 
         plt.show()
+
+
+    def bind_slider_to_motor(self, angle_var, motor_index, speed):
+        angle_var.trace_add("write", lambda *args: self.update_motors_gpio([angle.get() for angle in self.angle_vars], speeds=[speed]))
+
+
+    def bind_sliders_to_motors(self):
+        # Add the following lines to bind the update_motors_gpio function for each slider
+        for angle_var, motor_index, speed in zip(self.angle_vars, self.motor_indices, self.speeds):
+            self.bind_slider_to_motor(angle_var, motor_index, speed)
+
+        
+    def pins_config(self):
+           # Define GPIO pins for each motor
+           self.m1_step_pin = 3
+           self.m1_dir_pin = 5
+           self.m2_step_pin = 8
+           self.m2_dir_pin = 10
+           self.m3_step_pin = 11
+           self.m3_dir_pin = 13
+           self.m4_step_pin = 16
+           self.m4_dir_pin = 18
+           self.m5_step_pin = 19  # Replace with the appropriate pin for M5
+           self.m5_dir_pin = 21  # Replace with the appropriate pin for M5
+           
+       
+           # Define the GPIO pin to which the LED is connected
+           self.led_pin = 23
+
+           # Configure GPIO pins
+           GPIO.setmode(GPIO.BOARD)
+           GPIO.setup(self.m1_step_pin, GPIO.OUT)
+           GPIO.setup(self.m1_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m2_step_pin, GPIO.OUT)
+           GPIO.setup(self.m2_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m3_step_pin, GPIO.OUT)
+           GPIO.setup(self.m3_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m4_step_pin, GPIO.OUT)
+           GPIO.setup(self.m4_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m5_step_pin, GPIO.OUT)
+           GPIO.setup(self.m5_dir_pin, GPIO.OUT)
+           
+           # Set up the GPIO pin as an output
+           GPIO.setup(self.led_pin, GPIO.OUT)
+           
+
+    def update_motors_gpio(self, angles, speeds):
+        # angles: liste des angles pour chaque moteur
+        # speeds: liste des vitesses de rotation pour chaque moteur
+        speeds=self.speeds
+        for i, (angle, speed) in enumerate(zip(angles, speeds)):
+            direction = GPIO.HIGH if angle >= 0 else GPIO.LOW
+            step_pin, dir_pin = self.get_motor_pins(i)
+
+            GPIO.output(dir_pin, direction)
+
+            # Calculer dynamiquement le nombre de pas en fonction de l'angle et la vitesse
+            steps = int(abs(angle) * steps_per_degree * speed / max_speed)
+
+            # Générer les impulsions pour le mouvement
+            for _ in range(steps):
+                GPIO.output(step_pin, GPIO.HIGH)
+                time.sleep(0.001)  # Ajustez si nécessaire
+                GPIO.output(step_pin, GPIO.LOW)
+                time.sleep(0.001)  # Ajustez si nécessaire
+
+        time.sleep(0.1)
+   
+    def get_motor_pins(self, index):
+        try:
+            return {
+                0: (self.m1_step_pin, self.m1_dir_pin),
+                1: (self.m2_step_pin, self.m2_dir_pin),
+                2: (self.m3_step_pin, self.m3_dir_pin),
+                3: (self.m4_step_pin, self.m4_dir_pin),
+                4: (self.m5_step_pin, self.m5_dir_pin),
+            }[index]
+        except KeyError:
+            raise ValueError("Unsupported motor index")
+
+    def cleanup(self):
+        GPIO.cleanup()
         
     def quit(self):
+        self.streaming = False
+        self.cleanup()
         self.root.destroy()
 
     def run(self):
