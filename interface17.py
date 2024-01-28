@@ -1,6 +1,8 @@
+
+
 # -*- coding: utf-8 -*-
 """
-Created on Sat Jan 13 09:58:23 2024
+Created on Sun Jan 14 01:33:16 2024
 
 @author: magnn
 """
@@ -24,7 +26,15 @@ import matplotlib.pyplot as plt
 import math
 import RPi.GPIO as GPIO
 
+# dennes de nema 23
 
+max_speed=666.67 # Vitesse de rotation (RPM)=  Nombre de pas par tour(360/1.8=200)×Nombre de phases(2)×Frequence d'impulsion(1000Hz)/60
+steps_per_degree=0.56 # steps_per_degree= 1/angle_per_step(1.8)
+
+MIN_ANGLE = -180
+MAX_ANGLE = 180
+
+# Longeur des articulations du bras robot
 Longueur_d1 = 8 # distance entre la premiere et la deuxieme articulations
 Longeur_d5 = 60 # 
 
@@ -37,8 +47,7 @@ justify="center" #
 
 
 class RobotController:
-    MIN_ANGLE = -180
-    MAX_ANGLE = 180
+    
     DEFAULT_HOSTNAME = "NONE"
     DEFAULT_BACKGROUND = "lime"
     DEFAULT_FONT = ('Helvetica', 11, 'bold')
@@ -47,9 +56,10 @@ class RobotController:
         self.root = tk.Tk()
         self.root.title("Robot Controller")
         #self.root.configure(background="lime")
-        self.robotrunning =False
-        # pins configuration
+        #pins configuration
         self.pins_config()
+        
+
         self.streaming = False  # Flag to track if the camera is currently streaming
 
        # Configure row and column weights to make the canvas expandable
@@ -68,12 +78,9 @@ class RobotController:
         self.fgpi = False
         self.ssh = None # an attribute to store the SSH connection
       
-        #self.fgpi = False
-        #self.ssh = None  
-        
-        # Variable de drapeau pour indiquer si le processus doit être arrêté
-        self.stop_process_flag = False
+        self.stop_process_flag = False  # Variable de drapeau pour indiquer si le processus doit être arrêté
         self.camera_thread = None  # Thread object to handle camera streaming
+        self.motors_staut =False # flag to check it motors are spinning or not
 
         
          # Création d'un style ttk
@@ -96,6 +103,8 @@ class RobotController:
 
         # Initialiser les positions actuelles
         self.current_positions = [0, 0, 0, 0, 0]
+        
+        self.speeds= [100, 90, 70,80,20]
 
          # Section Menu
         bold_font = ('Helvetica', 11, 'bold')
@@ -195,12 +204,22 @@ class RobotController:
         self.angle_j3.set(0.0)  # Initialize to the initial value of J3
         
         self.angle_j4 = tk.DoubleVar()
-        self.angle_j4.set(0.0)  # Initialize to the initial value of J1
+        self.angle_j4.set(0.0)  # Initialize to the initial value of J4
 
         self.angle_j5 = tk.DoubleVar()
-        self.angle_j5.set(0.0)  # Initialize to the initial value of J2
+        self.angle_j5.set(0.0)  # Initialize to the initial value of J5
 
-
+              # Define your angle variables, corresponding motor indices, and speeds in lists
+        self.angle_vars = [
+              self.angle_j1,  # Initialize to the initial value of J1
+              self.angle_j2,  # Initialize to the initial value of J2
+              self.angle_j3,  # Initialize to the initial value of J3
+              self.angle_j4,  # Initialize to the initial value of J4
+              self.angle_j5,  # Initialize to the initial value of J5
+          ]
+        
+        self.motor_indices = list(range(5))
+        self.speeds = [100, 90, 70, 80, 20]
         self.create_angle_widgets()
 
         # Section Positions de l'Outil
@@ -286,7 +305,7 @@ class RobotController:
         self.create_objects_pose_widgets()
         
         # Section: Author
-        self.author_label = ttk.Label( self.sub_frame,text="COPYRIGHT 2023", font=bold_font, width=30, justify="center"
+        self.author_label = ttk.Label( self.sub_frame,text="COPYRIGHT 2024 @ NONZOOU MAGNOUDEWA", font=bold_font, width=30, justify="center"
         )
         self.author_label.grid(row=2, column=0, padx=10, pady=10)
 
@@ -298,6 +317,7 @@ class RobotController:
         # Update clock every second
         self.update_clock()
         self.create_pid_btn()
+        self.bind_sliders_to_motors()
         
     def update_clock(self):
         time_string = strftime("%H:%M:%S %p")
@@ -365,8 +385,9 @@ class RobotController:
         background2="blue"
         width2=10
         fg='white'
+  
         self.label_j1 = tk.Label(self.angles_frame, text="Angle J1:", font=bold_font)
-        self.slider_j1 = ttk.Scale(self.angles_frame, from_=-360, to=360, variable=self.angle_j1,
+        self.slider_j1 = ttk.Scale(self.angles_frame, from_=MIN_ANGLE, to=MAX_ANGLE, variable=self.angle_j1,
                                    orient=tk.HORIZONTAL, command=lambda value: self.update_angle_label_j1(value), cursor=cursor)
         self.entry_j1 = tk.Entry(self.angles_frame, textvariable=tk.StringVar(value="0.0"),justify=justify, font=bold_font, width=width2)
         self.btn_j1_inc = tk.Button(self.angles_frame, text="J1 +", command=self.increment_j1, 
@@ -375,7 +396,7 @@ class RobotController:
                                     background=background2, height=height, width=width, font=font, cursor=cursor, fg=fg)
 
         self.label_j2 = tk.Label(self.angles_frame, text="Angle J2:", font=bold_font)
-        self.slider_j2 = ttk.Scale(self.angles_frame, from_=-360, to=360, variable=self.angle_j2,
+        self.slider_j2 = ttk.Scale(self.angles_frame, from_=MIN_ANGLE, to=MAX_ANGLE, variable=self.angle_j2,
                                    orient=tk.HORIZONTAL, command=lambda value: self.update_angle_label_j2(value), cursor=cursor)
         self.entry_j2 = tk.Entry(self.angles_frame, textvariable=tk.StringVar(value="0.0"), justify=justify, font=bold_font, width=width2)
         self.btn_j2_inc = tk.Button(self.angles_frame, text="J2 +", command=self.increment_j2,
@@ -385,7 +406,7 @@ class RobotController:
         
         
         self.label_j3 = tk.Label(self.angles_frame, text="Angle J3:",font=bold_font)
-        self.slider_j3 = ttk.Scale(self.angles_frame, from_=-360, to=360, variable=self.label_j3,
+        self.slider_j3 = ttk.Scale(self.angles_frame, from_=MIN_ANGLE, to=MAX_ANGLE, variable=self.label_j3,
                                    orient=tk.HORIZONTAL, command=lambda value: self.update_angle_label_j3(value), cursor=cursor)
         self.entry_j3 = tk.Entry(self.angles_frame, textvariable=tk.StringVar(value="0.0"), justify=justify, font=bold_font, width=width2)
         self.btn_j3_inc = tk.Button(self.angles_frame, text="J3 +", command=self.increment_j3,
@@ -394,7 +415,7 @@ class RobotController:
                                     background=background2, height=height, width=width, font=font, cursor=cursor, fg=fg)
         
         self.label_j4 = tk.Label(self.angles_frame, text="Angle J4:", font=bold_font)
-        self.slider_j4 = ttk.Scale(self.angles_frame, from_=-360, to=360, variable=self.label_j4,
+        self.slider_j4 = ttk.Scale(self.angles_frame, from_=MIN_ANGLE, to=MAX_ANGLE, variable=self.label_j4,
                                    orient=tk.HORIZONTAL, command=lambda value: self.update_angle_label_j4(value), cursor=cursor)
         self.entry_j4 = tk.Entry(self.angles_frame, textvariable=tk.StringVar(value="0.0"), justify=justify, font=bold_font, width=width2)
         self.btn_j4_inc = tk.Button(self.angles_frame, text="J4 +", command=self.increment_j4,
@@ -403,7 +424,7 @@ class RobotController:
                                     background=background2, height=height, width=width, font=font, cursor=cursor, fg=fg)
         
         self.label_j5 = tk.Label(self.angles_frame, text="Angle J5:", font=bold_font)
-        self.slider_j5 = ttk.Scale(self.angles_frame, from_=-360, to=360, variable=self.label_j5,
+        self.slider_j5 = ttk.Scale(self.angles_frame, from_=MIN_ANGLE, to=MAX_ANGLE, variable=self.label_j5,
                                    orient=tk.HORIZONTAL, command=lambda value: self.update_angle_label_j5(value), cursor=cursor)
         self.entry_j5 = tk.Entry(self.angles_frame, textvariable=tk.StringVar(value="0.0"), justify=justify, font=bold_font, width=width2)
         self.btn_j5_inc = tk.Button(self.angles_frame, text="J5 +", command=self.increment_j5,
@@ -436,46 +457,58 @@ class RobotController:
         self.entry_j3.bind('<Return>', lambda event, entry=self.entry_j3: self.handle_enter_angles_slider_update(event, entry))
         self.entry_j4.bind('<Return>', lambda event, entry=self.entry_j4: self.handle_enter_angles_slider_update(event, entry))
         self.entry_j5.bind('<Return>', lambda event, entry=self.entry_j5: self.handle_enter_angles_slider_update(event, entry))
-    
+
+     # Set up a binding to disable manual sliding when motors are busy
+        self.slider_j1.bind("<B1-Motion>", lambda event: self.handle_manual_sliding(event, self.slider_j1))
+        self.slider_j2.bind("<B1-Motion>", lambda event: self.handle_manual_sliding(event, self.slider_j2))
+        self.slider_j3.bind("<B1-Motion>", lambda event: self.handle_manual_sliding(event, self.slider_j3))
+        self.slider_j4.bind("<B1-Motion>", lambda event: self.handle_manual_sliding(event, self.slider_j4))
+        self.slider_j5.bind("<B1-Motion>", lambda event: self.handle_manual_sliding(event, self.slider_j5))
+        
     def handle_enter_angles_slider_update(self, event, entry):
-          try:
-              # Cette méthode sera appelée lorsque la touche "Entrée" est pressée
-              j1_value = float(self.entry_j1.get())
-              j2_value = float(self.entry_j2.get())
-              j3_value = float(self.entry_j3.get())
-              j4_value = float(self.entry_j4.get())
-              j5_value = float(self.entry_j5.get())
-      
-              # Mettre à jour la variable associée au slider
-              self.slider_j1.set(j1_value)
-              self.slider_j2.set(j2_value)
-              self.slider_j3.set(j3_value)
-              self.slider_j4.set(j4_value)
-              self.slider_j5.set(j5_value)
-      
-              # Masquer le curseur en définissant la position à la fin du texte
-              entry.icursor(tk.END)
-          except ValueError:
-             
-              # Remettre la valeur précédente de la variable associée au slider
-              self.entry_j1.delete(0, tk.END)
-              self.entry_j1.insert(0, str(self.slider_j1.get()))
-      
-              self.entry_j2.delete(0, tk.END)
-              self.entry_j2.insert(0, str(self.slider_j2.get()))
-      
-              self.entry_j3.delete(0, tk.END)
-              self.entry_j3.insert(0, str(self.slider_j3.get()))
-              
-              self.entry_j4.delete(0, tk.END)
-              self.entry_j4.insert(0, str(self.slider_j4.get()))
-      
-              self.entry_j5.delete(0, tk.END)
-              self.entry_j5.insert(0, str(self.slider_j5.get()))
-      
-              # Masquer le curseur en définissant la position à la fin du texte
-              entry.icursor(tk.END)
+        if not self.motors_staut:
+              try:
+                  # Cette méthode sera appelée lorsque la touche "Entrée" est pressée
+                  j1_value = float(self.entry_j1.get())
+                  j2_value = float(self.entry_j2.get())
+                  j3_value = float(self.entry_j3.get())
+                  j4_value = float(self.entry_j4.get())
+                  j5_value = float(self.entry_j5.get())
           
+                  # Mettre à jour la variable associée au slider
+                  self.slider_j1.set(j1_value)
+                  self.slider_j2.set(j2_value)
+                  self.slider_j3.set(j3_value)
+                  self.slider_j4.set(j4_value)
+                  self.slider_j5.set(j5_value)
+          
+                  # Masquer le curseur en définissant la position à la fin du texte
+                  entry.icursor(tk.END)
+              except ValueError:
+                 
+                  # Remettre la valeur précédente de la variable associée au slider
+                  self.entry_j1.delete(0, tk.END)
+                  self.entry_j1.insert(0, str(self.slider_j1.get()))
+          
+                  self.entry_j2.delete(0, tk.END)
+                  self.entry_j2.insert(0, str(self.slider_j2.get()))
+          
+                  self.entry_j3.delete(0, tk.END)
+                  self.entry_j3.insert(0, str(self.slider_j3.get()))
+                  
+                  self.entry_j4.delete(0, tk.END)
+                  self.entry_j4.insert(0, str(self.slider_j4.get()))
+          
+                  self.entry_j5.delete(0, tk.END)
+                  self.entry_j5.insert(0, str(self.slider_j5.get()))
+          
+                  # Masquer le curseur en définissant la position à la fin du texte
+                  entry.icursor(tk.END)
+
+    def handle_manual_sliding(self, event, slider):
+        if not self.motors_staut:
+            slider.event_generate('<B1-Motion>', when='tail')
+            
     def create_tool_widgets(self):
         bold_font = ('Helvetica', 9, 'bold')
         #background="lime"
@@ -548,7 +581,7 @@ class RobotController:
         #background="brown"
         width=20
       
-        self.label_tool_velocity = tk.Label(self.vitesses_frame, text="VT(m/s):", font=bold_font)
+        self.label_tool_velocity = tk.Label(self.vitesses_frame, text="Mt(tr/min):", font=bold_font)
         self.entry_tool_velocity = tk.Entry(self.vitesses_frame, textvariable=tk.StringVar(value="0.0"), justify=justify, font=bold_font, width=width)
             
         self.label_base_motor_velocity = tk.Label(self.vitesses_frame, text="MB(tr/min):", font=bold_font)
@@ -912,11 +945,12 @@ class RobotController:
         self.error_history.append(total_error)
         
         if not self.are_positions_close(self.current_positions, self.target_positions, tolerance=0.1):
+           self.update_motors_gpio(self.target_positions, self.speeds)  # motors angles and speeds
            self.update_motors(pid_commands)
-           self.update_motors_gpio(pid_commands)
 
            # Mettre à jour l'erreur précédente
            self.prev_error = errors
+           self.motors_staut =True
 
            # Appel de la fonction pour mettre à jour la représentation graphique
           # self.update_plot()
@@ -990,17 +1024,17 @@ class RobotController:
             else:
                 
                 # Si non, planifier la prochaine mise à jour après un court délai
-                self.root.after(100, self.auto_update_pid)  # Appeler après 1000 ms (1 seconde)
+                self.root.after(10, self.auto_update_pid)  # Appeler après 1000 ms (1 seconde)
         
     def increment_j1(self):
         current_value = self.angle_j1.get()
-        if current_value < 180:
+        if current_value < MAX_ANGLE:
             self.angle_j1.set(current_value + 1)
             self.set_j1()
-
+            
     def decrement_j1(self):
         current_value = self.angle_j1.get()
-        if current_value > -180:
+        if current_value > MIN_ANGLE:
             self.angle_j1.set(current_value - 1)
             self.set_j1()
   
@@ -1027,13 +1061,13 @@ class RobotController:
 
     def increment_j2(self):
         current_value = self.angle_j2.get()
-        if current_value < 180:
+        if current_value < MAX_ANGLE:
             self.angle_j2.set(current_value + 1)
             self.set_j2()
 
     def decrement_j2(self):
         current_value = self.angle_j2.get()
-        if current_value > -180:
+        if current_value > MIN_ANGLE:
             self.angle_j2.set(current_value - 1)
             self.set_j2()
 
@@ -1058,17 +1092,16 @@ class RobotController:
         self.calculate_aX()
         self.calculate_ay()
         self.calculate_az()
-        
-        
+              
     def increment_j3(self):
         current_value = self.angle_j3.get()
-        if current_value < 180:
+        if current_value < MAX_ANGLE :
             self.angle_j3.set(current_value + 1)
             self.set_j3()
 
     def decrement_j3(self):
         current_value = self.angle_j3.get()
-        if current_value > -180:
+        if current_value > MIN_ANGLE:
             self.angle_j3.set(current_value - 1)
             self.set_j3()
 
@@ -1093,16 +1126,16 @@ class RobotController:
         self.calculate_ay()
         self.calculate_az()
         
-           
+          
     def increment_j4(self):
         current_value = self.angle_j4.get()
-        if current_value < 180:
+        if current_value < MAX_ANGLE:
             self.angle_j4.set(current_value + 1)
             self.set_j4()
 
     def decrement_j4(self):
         current_value = self.angle_j4.get()
-        if current_value > -180:
+        if current_value > MIN_ANGLE:
             self.angle_j4.set(current_value - 1)
             self.set_j4()
 
@@ -1126,17 +1159,16 @@ class RobotController:
         self.calculate_aX()
         self.calculate_ay()
         self.calculate_az()
-        
-         
+                 
     def increment_j5(self):
         current_value = self.angle_j5.get()
-        if current_value < 180:
+        if current_value < MAX_ANGLE :
             self.angle_j5.set(current_value + 1)
             self.set_j5()
 
     def decrement_j5(self):
         current_value = self.angle_j5.get()
-        if current_value > -180:
+        if current_value > MIN_ANGLE:
             self.angle_j5.set(current_value - 1)
             self.set_j5()
             
@@ -1252,35 +1284,58 @@ class RobotController:
           # calculate j4
           j4 = j234-(j3+j2)
           
-          # convert and display J1
-          j1 =round(math.degrees(j1),2)
-          self.angle_j1.set(j1)
-          self.entry_j1.delete(0, tk.END)
-          self.entry_j1.insert(0, str(j1))
-          
-          # convert and display J5
-          j5 =round(math.degrees(j5),2)
-          self.angle_j5.set(j5)
-          self.entry_j5.delete(0, tk.END)
-          self.entry_j5.insert(0, str(j5))
-          
-          j3=round(math.degrees(j3),2)
-          self.angle_j3.set(j3)
-          self.entry_j3.delete(0, tk.END)
-          self.entry_j3.insert(0, str(j3))
-          
-          # convert and display J2
-          j2 =round(math.degrees(j2),2)
-          self.angle_j2.set(j2)
-          self.entry_j2.delete(0, tk.END)
-          self.entry_j2.insert(0, str(j2))
-          
-          
-          # convert and display J4
-          j4 =round(math.degrees(j4),2)
-          self.angle_j4.set(j4)
-          self.entry_j4.delete(0, tk.END)
-          self.entry_j4.insert(0, str(j4))
+       
+          if j1 > math.pi:
+               j1 -= 2 * math.pi
+          elif j1 < -math.pi:
+               j1 += 2 * math.pi
+           
+          if j5 > math.pi:
+               j5 -= 2 * math.pi
+          elif j5 < -math.pi:
+               j5 += 2 * math.pi
+           
+          if j2 > math.pi:
+               j2 -= 2 * math.pi
+          elif j2 < -math.pi:
+               j2 += 2 * math.pi
+               
+          if j3 > math.pi:
+               j3 -= 2 * math.pi
+          elif j3 < -math.pi:
+               j3 += 2 * math.pi
+           
+          if j4 > math.pi:
+               j4 -= 2 * math.pi
+          elif j4 < -math.pi:
+               j4 += 2 * math.pi
+              
+            # Create a list of angles and speeds
+          angles = [j1, j2, j3, j4, j5]
+          speeds = self.speeds
+        
+            # Loop through the angles and update sliders dynamically
+          for i, (angle, speed) in enumerate(zip(angles, speeds)):
+                # Convert and display the angle
+                angle_degrees = round(math.degrees(angle), 2)
+                self.set_and_bind_slider(i, angle_degrees, speed)
+        
+            # After updating the sliders, call update_motors_gpio with the calculated angles and speeds
+          self.update_motors_gpio(angles, speeds)
+
+    def set_and_bind_slider(self, motor_index, angle, speed):
+              # Set the angle value for the corresponding slider
+              angle_variable = getattr(self, f'angle_j{motor_index + 1}')
+              angle_variable.set(angle)
+
+              # Bind the slider to the motor
+              bind_method = getattr(self, f'bind_angle_j{motor_index + 1}_slider')
+              bind_method()
+
+              # Update the entry field with the angle value
+              entry_field = getattr(self, f'entry_j{motor_index + 1}')
+              entry_field.delete(0, tk.END)
+              entry_field.insert(0, str(angle))
               
     # calcul des angles cibles
     def calculate_angles_cibles(self, event, entry ):
@@ -1290,6 +1345,11 @@ class RobotController:
           x = float(self.entry_x_ob.get())
           y= float(self.entry_y_ob.get())
           j1 = math.atan2(y, x)
+          
+          if j1 > math.pi:
+                j1 -= 2 * math.pi
+          elif j1 < -math.pi:
+                j1 += 2 * math.pi
           #print(f"j1 est : {j1}")
           
           
@@ -1303,11 +1363,21 @@ class RobotController:
           c5=sx*math.sin(j1)-sy*math.cos(j1)
           j5=math.atan2(s5, c5)
           
+          if j5 > math.pi:
+                j5 -= 2 * math.pi
+          elif j5 < -math.pi:
+                j5 += 2 * math.pi
+          
           # calculate J234
           ax= self.ax.get()
           ay= self.ay.get()
           az= self.az.get()
           j234=math.atan2(-(ax*math.cos(j1)+ay*math.sin(j1)), -az)
+          
+          if j234> math.pi:
+                j234 -= 2 * math.pi
+          elif j234 < -math.pi:
+                j234 += 2 * math.pi
           
           #calculate J3
           z=float(self.entry_z_ob.get())
@@ -1328,14 +1398,30 @@ class RobotController:
           s3=float(s3)
           j3=math.atan2(s3, c3)
           
+          if j3 > math.pi:
+                j3 -= 2 * math.pi
+          elif j3 < -math.pi:
+                j3 += 2 * math.pi
+          
           #calculate J2
           r=distance_a3*c3 + distance_a2
           s=distance_a3*s3
           j2=math.atan2((r*d-s*c), (r*c+s*d))
           
+          if j2 > math.pi:
+                j2 -= 2 * math.pi
+          elif j2 < -math.pi:
+                j2 += 2 * math.pi
+            
           
           # calculate j4
           j4 = j234-(j3+j2)
+          
+          if j4 > math.pi:
+                j4 -= 2 * math.pi
+          elif j4 < -math.pi:
+                j4 += 2 * math.pi
+
           
           # convert and display J1
           j1 =round(math.degrees(j1),2)
@@ -1821,11 +1907,11 @@ class RobotController:
             else:
                 
                 # Si non, planifier la prochaine mise à jour après un court délai
-                self.root.after(100, self.auto_update_pid_home)  # Appeler après 1000 ms (1 seconde)
+                self.root.after(10, self.auto_update_pid_home)  # Appeler après 1000 ms (1 seconde)
         
     def update_pid_home(self):
         self.target_positions = [90, 90, -90,
-                                 -90, 0]
+                                 -90, 90]
 
         self.current_positions = [self.angle_j1.get(), self.angle_j2.get(), self.angle_j3.get(),
                                   self.angle_j4.get(), self.angle_j5.get()]
@@ -1843,11 +1929,12 @@ class RobotController:
         self.error_history.append(total_error)
         
         if not self.are_positions_close(self.current_positions, self.target_positions, tolerance=0.1):
+           self.update_motors_gpio(self.target_positions, speeds=[100, 90, 0,0,20])  # motors angles and speeds
            self.update_motors_home(pid_commands)
-           self.update_motors_gpio(pid_commands)
 
            # Mettre à jour l'erreur précédente
            self.prev_error = errors
+           self.motors_staut =True
 
            # Appel de la fonction pour mettre à jour la représentation graphique
            #self.update_plot()
@@ -1976,76 +2063,97 @@ class RobotController:
         self.ax0.set_ylabel('Total Error')
         self.ax0.set_title('PID') 
         plt.show()
-    def pins_config(self):
-        # Define GPIO pins for each motor
-        self.m1_step_pin = 3
-        self.m1_dir_pin = 5
-        self.m2_step_pin = 8
-        self.m2_dir_pin = 10
-        self.m3_step_pin = 11
-        self.m3_dir_pin = 13
-        self.m4_step_pin = 16
-        self.m4_dir_pin = 18
-        self.m5_step_pin = 19  # Replace with the appropriate pin for M5
-        self.m5_dir_pin = 21  # Replace with the appropriate pin for M5
-        
+
+    def bind_sliders_to_motors(self):
+        if not self.motors_staut :
+            self.bind_angle_j1_slider()
+            self.bind_angle_j2_slider()
+            self.bind_angle_j3_slider()
+            self.bind_angle_j4_slider()
+            self.bind_angle_j5_slider()
     
-        # Define the GPIO pin to which the LED is connected
-        self.led_pin = 23
+    def bind_angle_j1_slider(self):
+        self.angle_j1.trace_add("write", lambda *args: self.update_motors_gpio([self.angle_j1.get(), 0, 0, 0, 0], speeds=[self.speeds[0], 0, 0, 0, 0]))
+    
+    def bind_angle_j2_slider(self):
+        self.angle_j2.trace_add("write", lambda *args: self.update_motors_gpio([0, self.angle_j2.get(), 0, 0, 0], speeds=[0, self.speeds[1], 0, 0, 0]))
+    
+    def bind_angle_j3_slider(self):
+        self.angle_j3.trace_add("write", lambda *args: self.update_motors_gpio([0, 0, self.angle_j3.get(), 0, 0], speeds=[0, 0, self.speeds[2], 0, 0]))
+    
+    def bind_angle_j4_slider(self):
+        self.angle_j4.trace_add("write", lambda *args: self.update_motors_gpio([0, 0, 0, self.angle_j4.get(), 0], speeds=[0, 0, 0, self.speeds[3], 0]))
+    
+    def bind_angle_j5_slider(self):
+        self.angle_j5.trace_add("write", lambda *args: self.update_motors_gpio([0, 0, 0, 0, self.angle_j5.get()], speeds=[0, 0, 0, 0, self.speeds[4]]))
 
-        
+    def pins_config(self):
+           # Define GPIO pins for each motor
+           self.m1_step_pin = 3
+           self.m1_dir_pin = 5
+           self.m2_step_pin = 8
+           self.m2_dir_pin = 10
+           self.m3_step_pin = 11
+           self.m3_dir_pin = 13
+           self.m4_step_pin = 16
+           self.m4_dir_pin = 18
+           self.m5_step_pin = 19  # Replace with the appropriate pin for M5
+           self.m5_dir_pin = 21  # Replace with the appropriate pin for M5
+           
+       
+           # Define the GPIO pin to which the LED is connected
+           self.led_pin = 23
 
-        # Configure GPIO pins
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(self.m1_step_pin, GPIO.OUT)
-        GPIO.setup(self.m1_dir_pin, GPIO.OUT)
-        GPIO.setup(self.m2_step_pin, GPIO.OUT)
-        GPIO.setup(self.m2_dir_pin, GPIO.OUT)
-        GPIO.setup(self.m3_step_pin, GPIO.OUT)
-        GPIO.setup(self.m3_dir_pin, GPIO.OUT)
-        GPIO.setup(self.m4_step_pin, GPIO.OUT)
-        GPIO.setup(self.m4_dir_pin, GPIO.OUT)
-        GPIO.setup(self.m5_step_pin, GPIO.OUT)
-        GPIO.setup(self.m5_dir_pin, GPIO.OUT)
-        
-        # Set up the GPIO pin as an output
-        GPIO.setup(self.led_pin, GPIO.OUT)
-
-    def update_motors_gpio(self, commands):
-        for i, command in enumerate(commands):
-            # Determine the direction based on the sign of the command
-            direction = GPIO.HIGH if command >= 0 else GPIO.LOW
-
-            if i == 0:
-                step_pin, dir_pin = self.m1_step_pin, self.m1_dir_pin
-            elif i == 1:
-                step_pin, dir_pin = self.m2_step_pin, self.m2_dir_pin
-            elif i == 2:
-                step_pin, dir_pin = self.m3_step_pin, self.m3_dir_pin
-            elif i == 3:
-                step_pin, dir_pin = self.m4_step_pin, self.m4_dir_pin
-            elif i == 4:
-                step_pin, dir_pin = self.m5_step_pin, self.m5_dir_pin
-            else:
-                raise ValueError("Unsupported motor index")
-
+           # Configure GPIO pins
+           GPIO.setmode(GPIO.BOARD)
+           GPIO.setup(self.m1_step_pin, GPIO.OUT)
+           GPIO.setup(self.m1_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m2_step_pin, GPIO.OUT)
+           GPIO.setup(self.m2_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m3_step_pin, GPIO.OUT)
+           GPIO.setup(self.m3_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m4_step_pin, GPIO.OUT)
+           GPIO.setup(self.m4_dir_pin, GPIO.OUT)
+           GPIO.setup(self.m5_step_pin, GPIO.OUT)
+           GPIO.setup(self.m5_dir_pin, GPIO.OUT)
+           
+           # Set up the GPIO pin as an output
+           GPIO.setup(self.led_pin, GPIO.OUT)
+           
+    def update_motors_gpio(self, angles, speeds):
+        for i, (angle, speed) in enumerate(zip(angles, speeds)):
+            direction = GPIO.HIGH if angle >= 0 else GPIO.LOW
+            step_pin, dir_pin = self.get_motor_pins(i)
+    
             GPIO.output(dir_pin, direction)
-
-            # Generate pulses for movement
-            for _ in range(abs(int(command))):
+    
+            # Calculate the number of steps dynamically based on the angle and speed
+            steps = int(abs(angle) * steps_per_degree * speed / max_speed)
+    
+            # Generate pulses for the movement
+            for _ in range(steps):
                 GPIO.output(step_pin, GPIO.HIGH)
-                GPIO.output(self.led_pin, GPIO.HIGH)
                 time.sleep(0.001)  # Adjust if necessary
                 GPIO.output(step_pin, GPIO.LOW)
-                GPIO.output(self.led_pin, GPIO.HIGH)
                 time.sleep(0.001)  # Adjust if necessary
-
-        # Pause for stability
+    
         time.sleep(0.01)
 
+   
+    def get_motor_pins(self, index):
+        try:
+            return {
+                0: (self.m1_step_pin, self.m1_dir_pin),
+                1: (self.m2_step_pin, self.m2_dir_pin),
+                2: (self.m3_step_pin, self.m3_dir_pin),
+                3: (self.m4_step_pin, self.m4_dir_pin),
+                4: (self.m5_step_pin, self.m5_dir_pin),
+            }[index]
+        except KeyError:
+            raise ValueError("Unsupported motor index")
+
     def cleanup(self):
-        # Clean up GPIO pins when no longer needed
-        GPIO.cleanup()   
+        GPIO.cleanup()
         
     def quit(self):
         self.streaming = False
@@ -2058,3 +2166,4 @@ class RobotController:
 if __name__ == "__main__":
     controller = RobotController()
     controller.run()
+
