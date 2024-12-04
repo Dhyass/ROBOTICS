@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Nov  6 21:32:00 2023
+
+@author: magnn
+"""
+
 import cv2
 import numpy as np
 
