@@ -4,7 +4,7 @@
 """
 Created on Sun Jan 14 01:33:16 2024
 
-@author: magnn
+@author: magnoudewa nonzoou
 """
 
 import threading
@@ -2097,8 +2097,8 @@ class RobotController:
            self.m3_dir_pin = 13
            self.m4_step_pin = 16
            self.m4_dir_pin = 18
-           self.m5_step_pin = 19  # Replace with the appropriate pin for M5
-           self.m5_dir_pin = 21  # Replace with the appropriate pin for M5
+           self.m5_step_pin = 19 # with the appropriate pin for M5
+           self.m5_dir_pin = 21  # with the appropriate pin for M5
            
        
            # Define the GPIO pin to which the LED is connected
